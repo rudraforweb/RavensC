@@ -4,77 +4,57 @@
   Team Members: Rudra Kumar, Ali Zain Bukhari, Dean Forsyth, Benjamin Leonard, James Rogers, and Caitlyn Volkert.
   Robofest Exhibiton
   Sunlake Academy of Math and Science
-  Sphero RVR + Sparkfun Devices
+  Sphero RVR + Sparkfun Redboard Plus + Sparkfun Devices
 */
 
-//Libraries:
+// Libraries:
 #include <Wire.h>                              // Wire/Qwiic
 #include <Adafruit_PWMServoDriver.h>           // Servo/PCA9685
 #include <SparkFun_I2C_Mux_Arduino_Library.h>  //Qwiic Mux TCA9548A
 #include <SFE_MicroOLED.h>                     //Qwiic Mini Display
-#include "SparkFun_I2C_GPS_Arduino_Library.h"  //Qwiic GPS XA1110
 #include "SparkFun_VL53L1X.h"                  //Qwiic Distance VL531X
 #include <SpheroRVR.h>                         //Sphero RVR
 #include <SparkFun_Qwiic_Button.h>             //Qwiic Button
-#include <Servo.h>  
+#include <Servo.h>
 
-//Variables:
-#define PIN_RESET 9
-
-#define SERVOMIN 160   // This is the 'minimum' pulse length count (out of 4096)
-#define SERVOMAX 500   // This is the 'maximum' pulse length count (out of 4096)
-#define USMIN 600      // This is the rounded 'minimum' microsecond length based on the minimum pulse of 150
-#define USMAX 2400     // This is the rounded 'maximum' microsecond length based on the maximum pulse of 600
-#define SERVO_FREQ 50  // Analog servos run at ~50 Hz updates
+// Constants
+#define SERVO_FREQ 50  // Servo frequency
+#define USMIN 600      // Min pulse width
+#define USMAX 2400     // Max pulse width
 
 QwiicButton button;
 QWIICMUX myMux;
 SFEVL53L1X distanceSensor;
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver();
 
-//RVR Functions:
-static DriveControl driveControl;  //Drive Control
-static uint32_t ledGroup;          //LEDs
-static LedControl ledControl;
-static void getBatteryVoltageStateCallback(GetBatteryVoltageStateReturn_t *batteryVoltageStateReturn);  //Battery
-MicroOLED oled(PIN_RESET);//OLED
+// RVR Functions:
+static DriveControl driveControl;  // Drive Control
+MicroOLED oled(9);
 
+// PROGMEM String Data
+const char welcomeMessage[] PROGMEM = "RavensC++\nID:3991-1\n \nPush to\nstart\n";
+const char startMessage[] PROGMEM = "RavensC++\nID:3991-1\n\n\nStarting.. \n";
+const char serialMonitorMessage[] PROGMEM = "_________________________\nRavensC++ SERIAL MONITOR\n";
+const char emergencyStopMessage[] PROGMEM = "RavensC++\nID:3991-1\n\n\nSTOPPED \n";
 
-//Button Functions:
-uint8_t brightness = 250;   //The maximum brightness of the pulsing LED. Can be between 0 (min) and 255 (max)
-uint16_t cycleTime = 1000;  //The total time for the pulse to take. Set to a bigger number for a slower pulse, or a smaller number for a faster pulse
-uint16_t offTime = 200;     //The total time to stay off between pulses. Set to 0 to be pulsing continuously.
-
+int seed_dis = 5;
+int max_dis_front = 149; 
+int foward = 500;
 /*
 QWIIC PORTS
-Right Distance Port: 4
-Front Distance Port: 6
-Left Distance Port: 7
-Button port : 0
-Display port: 1
-GPS port: 3
+Right Dis Port: 4    Button port : 0
+Front Dis Port: 6    Display port: 1
+Left Dis Port: 7     Servo Controller: 3
+
 
 SERVO PORTS
-ARMEntry: 0
-ARMCenter: 1
-ARMShovel: 2
-SEEDcontrol: 3
+ARMEntry: 0         ARMShovel: 2
+ARMCenter: 1        SEEDcontrol: 3
 */
 
-// These are stored in mm
-double stagel = 914;
-double stagew = 609.6;
-// how far each seed is apart (horizontally and vertically)
-double seed_dis = 0;
-// half the length of the robot L and W
-double hw = 107.95;
-double hl = 88.9;
-// servol stands for servo length, its not from the midpoint, you would have to add both the hl and servol to get the length from midpoint to end of servos
-double servol = 127;
-
-
+// Setup Function
 void setup() {
-  // set up communication with the RVR
+  // Set up communication with the RVR
   rvr.configUART(&Serial);
   rvr.wake();
   delay(2000);
@@ -82,56 +62,92 @@ void setup() {
   // RVR drive control
   driveControl = rvr.getDriveControl();
 
-  // RVR led control
-  ledControl = rvr.getLedControl();
-
-  //Start setup:
+  // Start setup:
   Serial.begin(115200);
   Wire.begin();
   pwm.begin();
   pwm.setOscillatorFrequency(27000000);
   pwm.setPWMFreq(SERVO_FREQ);
 
-  setupMux();
+  myMux.begin();
+
   setPort(1);
-  setupOled();
+  // Start OLED
+  oled.begin(0x3D, Wire);  // Initialize the OLED
+  oled.clear(ALL);         // Clear the display's internal memory
+  oled.display();          // Display what's in the buffer (splashscreen)
+  oled.setFontType(0);
 
   delay(2000);  // Delay 1000 ms
-  Serial.print("_________________________\n");
-  Serial.print("RavensC++ SERIAL MONITIOR\n");
 
-  oledDisplayMessage("RavensC++\nID:3991-1\n \nPush to\nstart\n");
+
+  oledDisplayMessage(welcomeMessage);
   setServo(3, 45);
+
+  //Checks if distance sensors are online
+  myMux.setPort(6);
+  distanceSensor.sensorOn();
+  if (!distanceSensor.begin()) {
+    Serial.println(F("Front Distance Sensor online!"));
+  } else {
+    Serial.println(F("Front Distance Sensor failed to begin. Please check wiring. Freezing..."));
+    while (true)
+      ;
+  }
+  myMux.setPort(7);
+  distanceSensor.sensorOn();
+  if (!distanceSensor.begin()) {
+    Serial.println(F("Right Sensor online!"));
+  } else {
+    Serial.println(F("Right Distance Sensor failed to begin. Please check wiring. Freezing..."));
+    while (true)
+      ;
+  }
+  myMux.setPort(4);
+  distanceSensor.sensorOn();
+  if (!distanceSensor.begin()) {
+    Serial.println(F("Left Sensor online!"));
+  } else {
+    Serial.println(F("Left Sensor Sensor failed to begin. Please check wiring. Freezing..."));
+    while (true)
+      ;
+  }
   setPort(0);
   button.begin();
   button.LEDoff();
-  while (button.isPressed() == false) {
-    button.LEDconfig(brightness, cycleTime, offTime);
-    if (button.isPressed() == true) {
-      Serial.println("Button Pressed. Starting...");
-      button.LEDon(20);
-      break;
-    }
+  while (!button.isPressed()) {
+    button.LEDconfig(250, 1000, 200);
+    delay(100);
   }
+  button.LEDon(20);
 
-  //END setup.
+  // END setup
 
   setPort(1);
 
-  oledDisplayMessage("RavensC++\nID:3991-1\n\n\nStarting.. \n");
+  oledDisplayMessage(startMessage);
+  //Moves servo to starting position
+  setServo(0, 100);
+  setServo(1, 180);
+  setServo(2, 180);
 
-  dig();
+  //void setup() END
 }
 
+//Functions:
 
 void seedSpit() {
-  //Spits seeds
+  // Spits seeds
   setServo(3, 0);
   delay(200);
   setServo(3, 45);
 }
-void dig() {
-  //Picks up dirt
+
+int dig() {
+  // Picks up dirt
+  turnN(90);
+  delay(500);
+  rawForward(500);
   setServo(0, 140);
   setServo(1, 150);
   setServo(2, 180);
@@ -145,102 +161,155 @@ void dig() {
   setServo(2, 30);
   setServo(1, 90);
   setServo(0, 40);
-  delay(3000);
-  //Spits seeds
-  turn(90);
-  turn(90);
+  delay(1000);
+  rawBackward(500);
+  // Spits seeds
+  turnN(270);
+  delay(500);
+  turnN(270);
+  delay(1000);
+  rawBackward(500);
   delay(1000);
   seedSpit();
   delay(1000);
-  turn(90);
-  turn(90);
-  //Buries seed with dirt
+  rawForward(500);
+  delay(1000);
+  turnN(90);
+  turnN(90);
+  // Bury seed with dirt
+  rawForward(500);
   setServo(2, 180);
+  delay(1000);
+  rawBackward(500);
+  delay(1000);
+  turnN(270);
 }
 
+void rawForward(unsigned long ms) {
+  driveControl.setRawMotors(rawMotorModes::forward, 64, rawMotorModes::forward, 64);
+  delay(ms);
+  driveControl.rollStop(0);
+}
 
-
+void rawBackward(unsigned long ms) {
+  driveControl.setRawMotors(rawMotorModes::reverse, 64, rawMotorModes::reverse, 64);
+  delay(ms);
+  driveControl.rollStop(0);
+}
 
 void setServo(int port, int degrees) {
-  //Turns servo from 0 to 180 degrees
-
-  // Constrain degrees between 0 and 180
+  // Turns servo from 0 to 180 degrees
   degrees = constrain(degrees, 0, 180);
-
-  // Map degrees to pulse width
-  int pulse = map(degrees, 0, 180, SERVOMIN, SERVOMAX);
-
-  // Send command to servo
+  int pulse = map(degrees, 0, 180, 160, 500);
   pwm.setPWM(port, 0, pulse);
 }
 
-void oledDisplayMessage(char message[]) {
-  //Displays a message on the display
-  oled.clear(PAGE);
-  delay(1000);
-  oled.setCursor(0, 0);
-  oled.print(message);
-  oled.display();
-}
+void oledDisplayMessage(const char* message) {
+  myMux.setPort(1);
 
-void setupMux() {
-  //Starts Mux
-  myMux.begin();
-  byte currentPortNumber = myMux.getPort();
+  // Load the message from PROGMEM into a buffer in RAM
+  char buffer[100];  // Assuming message is smaller than 100 characters
+  for (int i = 0; i < 100; i++) {
+    buffer[i] = pgm_read_byte(&message[i]);
+    if (buffer[i] == '\0') break;  // Stop if we reach the end of the string
+  }
+
+  // Clear the OLED screen
+  oled.clear(PAGE);      // Clear the display
+  delay(1000);           // Optional: Delay for clearing
+  oled.setCursor(0, 0);  // Start at the top-left of the screen
+
+  // Print the buffer to the OLED
+  oled.print(buffer);
+  oled.display();  // Display the message
+
+  // Clear the buffer
+  memset(buffer, 0, sizeof(buffer));  // Clear the RAM buffer
 }
 
 void setPort(int muxPort) {
-  //Quick change for Mux ports
+  // Quick change for Mux ports
   myMux.setPort(muxPort);
 }
 
-void setupOled() {
-  //Starts OLED
-  oled.begin(0x3D, Wire);  // Initialize the OLED
-  oled.clear(ALL);         // Clear the display's internal memory
-  oled.display();          // Display what's in the buffer (splashscreen)
-  oled.setFontType(0);
+void moveDistance(int inches) {
+  rvr.resetYaw();
+  // Speed is 6 inches per second (from your test)
+  int timeToMove = (inches / 6.0) * 1000;  // Convert seconds to milliseconds
+
+  // Adjust the time slightly to compensate for over-movement (if it moves too far)
+  timeToMove -= 250;  // Reduces the time by 200ms to make it closer to the intended distance
+
+  // Move forward
+  driveControl.rollStart(0, 25);  // Move forward at speed 25
+  delay(timeToMove);              // Wait for the RVR to move the desired distance
+  driveControl.rollStop(0);       // Stop moving
 }
 
-void moveDistance(double distance, int speed, int heading) {
-  //Moves RVR
-
-  // Estimated time formula: time = distance / speed * 1000 (convert to ms)
-  // Using double for precision with mm (distance can now be in mm)
-  double time = (distance / (double)speed) * 1000.0;
+int turn(uint16_t heading, uint8_t turnSpeed) {
+  // Reset the yaw (orientation) of the RVR
   rvr.resetYaw();
-  // Start moving
-  driveControl.setHeading(heading);  // Assuming heading is passed as an integer
-  driveControl.rollStart(heading, speed);
-  delay(time);
 
-  // Stop moving
+  // Set the initial heading to 0 (forward)
+  driveControl.setHeading(0);
+  delay(100);
+
+  // Start turning with the specified heading and speed
+  driveControl.rollStart(heading, turnSpeed);
+  delay(2000);  // Turn for 2 seconds (you can adjust the delay as needed)
+
+  // Reset yaw after the turn
+  rvr.resetYaw();
+  driveControl.setHeading(0);
+  delay(100);
+
+  // Stop the RVR after the turn is complete
+  driveControl.rollStop(0);
+}
+
+int turnN(uint16_t heading) {
+  // Reset yaw to ensure the starting angle is 0
+  rvr.resetYaw();
   driveControl.rollStop(heading);
-}
-
-
-int turn(uint16_t heading) {
-  /*90: left
-    270: right
-    Turns RVR*/
-  rvr.resetYaw();
-  driveControl.setHeading(0);
-  delay(100);
-  driveControl.rollStart(heading, 1);
   delay(1000);
+  driveControl.setRawMotors(rawMotorModes::reverse, 32, rawMotorModes::reverse, 32);
+  delay(1);
+  driveControl.rollStop(heading);
   rvr.resetYaw();
-  driveControl.setHeading(0);
-  delay(100);
-  driveControl.rollStop(0);
 }
+void getdistance(int port) {
+  myMux.setPort(port);
+  distanceSensor.startRanging();  // Initiate measurement
 
-void stop() {
-  //Halts RVR
-  rvr.resetYaw();
-  driveControl.setHeading(0);
-  driveControl.rollStop(0);
+  while (!distanceSensor.checkForDataReady()) {
+    delay(1);
+  }
+
+  int distance = distanceSensor.getDistance();
+  distanceSensor.clearInterrupt();
+  distanceSensor.stopRanging();
+
+  Serial.print(F("Distance(mm): "));
+  Serial.println(distance);
+
+  if (distance < 250) {  // Set your threshold here
+    driveControl.rollStop(0);
+    delay(1000);
+    oledDisplayMessage(emergencyStopMessage);
+    delay(1000);
+    while (true) {
+  }
+  } else {
+    Serial.println("continue");
+  }
 }
 
 void loop(){
-  //Does nothing... for now
+  //Plants seeds
+  dig();
+  delay(1000);
+  getdistance(6);
+  delay(1000);
+  rawForward(750);
+  delay(1000);
 };
